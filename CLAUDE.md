@@ -118,6 +118,50 @@ nix develop
 zen-build         # first full build in the feature tree
 ```
 
+#### Gotcha: rewrite surfer's absolute symlinks after `cp`
+
+`surfer import` seeds `engine/` with ~25k **absolute** symlinks back into
+the `src/` of whichever worktree was cwd when it last ran. After
+`cp -ac engine` those symlinks still point at the old worktree — so edits
+in `$FEAT/src/zen/**` don't show up in the built browser, and deleted
+files from the old worktree appear as "inherited" changes. Git status in
+`$FEAT` is clean; the leakage is entirely via `engine/` symlink targets.
+
+Check + fix immediately after the copy, before `zen-build`:
+
+```bash
+# Where are the symlinks currently pointing?
+readlink "$FEAT/engine/zen/spaces/create-workspace-form.css"
+# → /Users/zotavka/Developer/Workspaces/<some-other-worktree>/src/...
+
+OLD=/Users/zotavka/Developer/Workspaces/<that-other-worktree>
+python3 - "$OLD" "$FEAT" <<'PY'
+import os, sys
+old, feat = sys.argv[1], sys.argv[2]
+for r, ds, fs in os.walk(os.path.join(feat, "engine"), followlinks=False):
+    for n in fs + ds:
+        p = os.path.join(r, n)
+        if not os.path.islink(p): continue
+        t = os.readlink(p)
+        if t.startswith(old + "/") or t == old:
+            os.unlink(p); os.symlink(feat + t[len(old):], p)
+PY
+
+# Verify — should print 0
+find "$FEAT/engine" -type l -lname "$OLD/*" | wc -l
+```
+
+Takes ~20 s. Running `surfer import` in the new worktree also fixes it
+but re-applies every patch and is much heavier. The symlink rewrite is
+side-effect-free because the file *contents* are identical across
+worktrees — only the absolute-path prefix differs.
+
+Once this has happened to the main repo's `engine/` once (i.e. someone
+ran `surfer import` while cwd was a feature worktree), every subsequent
+`cp -ac engine` inherits the pollution until you re-point the symlinks
+or regenerate `engine/` from scratch (`trash engine node_modules` + next
+`zen-build`).
+
 ### Turn a tested feature into a clean PR branch
 
 Once the feature works locally on `zotavka/dev-gh-123-feature`, cherry-pick

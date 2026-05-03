@@ -156,6 +156,17 @@
             # Node-gyp etc. want this.
             export npm_config_python="${pythonEnv}/bin/python3"
 
+            # Once `mach bootstrap` has fetched Firefox's clang toolchain,
+            # prefer it over nix's clang-wrapper. The wrapper mangles a few
+            # flags (notably preprocessing of `.S` files — `__APPLE__` stops
+            # firing, which breaks engine/config/external/icu/data/icu_data.S).
+            # Guarded so a fresh checkout that hasn't bootstrapped yet still
+            # enters the shell cleanly.
+            if [ -x "$HOME/.mozbuild/clang/bin/clang" ]; then
+              export CC="$HOME/.mozbuild/clang/bin/clang"
+              export CXX="$HOME/.mozbuild/clang/bin/clang++"
+            fi
+
             ${pkgs.lib.optionalString isDarwin ''
               export SURFER_COMPAT=aarch64
               export SURFER_PLATFORM=darwin
@@ -169,6 +180,44 @@
               fi
             ''}
 
+            # zen-build — follows docs.zen-browser.app/contribute/desktop/building.
+            # Runs first-time setup (npm ci + npm run init) on demand, then
+            # the two steps every full rebuild needs: sync the en-US language
+            # pack into engine/, then `npm run build`. After the first full
+            # build, use `zen-build-ui` for JS-only changes.
+            zen-build() {
+              set -e
+              if [ ! -x node_modules/.bin/surfer ]; then
+                echo "→ npm ci"
+                npm ci
+              fi
+              if [ ! -d engine ] || [ ! -f engine/mozconfig ]; then
+                echo "→ npm run init"
+                npm run init
+              fi
+              echo "→ scripts/update_en_US_packs.py"
+                # Required after every surfer reset/import: copies
+                # locales/en-US/browser/browser/zen-*.ftl into
+                # engine/browser/locales/en-US/. Without this, chrome UI
+                # renders with empty strings for anything Zen-specific.
+              python3 scripts/update_en_US_packs.py
+              echo "→ npm run build"
+              npm run build
+              set +e
+              echo "✓ zen-build complete. Run 'npm start' to launch."
+            }
+
+            zen-build-ui() {
+              set -e
+              python3 scripts/update_en_US_packs.py
+              npm run build:ui
+              set +e
+            }
+
+            # Export so the helpers are callable from `nix develop --command
+            # bash -c 'zen-build'`, not just interactive shells.
+            export -f zen-build zen-build-ui
+
             echo ""
             echo "Zen Browser dev shell ready."
             echo "  node    $(node --version)"
@@ -176,17 +225,10 @@
             echo "  rustc   $(rustc --version)"
             echo "  tar     $(tar --version | head -1)"
             echo ""
-            echo "First-time setup (see .claude/plans/get-this-codebase-to-snuggly-stearns.md):"
-            echo "  npm ci"
-            echo "  npm run surfer -- ci --brand release --display-version 1.19.9b"
-            echo "  npm run download"
-            echo "  npm run import"
-            echo "  (cd engine && ./mach --no-interactive bootstrap \\"
-            echo "      --application-choice browser${pkgs.lib.optionalString isDarwin " --exclude macos-sdk"})"
-            echo ""
             echo "Build + run:"
-            echo "  npm run build"
-            echo "  npm start"
+            echo "  zen-build       # full rebuild (handles first-time setup too)"
+            echo "  zen-build-ui    # JS-only incremental rebuild"
+            echo "  npm start       # launch the built browser"
             echo ""
             echo "Running tests:"
             echo "  npm test                  # all suites under src/zen/tests"

@@ -48,29 +48,49 @@ Working tree only (gitignored, never committed):
   rebuild from scratch.
 - `node_modules/` — surfer + build tooling dependencies.
 
-These two are the "cached build artifacts" — they stay on disk in this
-worktree and get copied into fresh feature worktrees to skip the slow first-
-build steps.
+These two are the "cached build artifacts". They live in the main checkout
+(`/Users/zotavka/Developer/zen-browser-desktop`, which stays on `zotavka/dev`)
+and get copied into fresh feature worktrees to skip the slow first-build
+steps.
+
+## Building
+
+The flake defines two shell functions, exported so they work under both
+interactive `nix develop` and `nix develop --command bash -c '…'`:
+
+- `zen-build` — full build. Handles first-time setup on its own (runs
+  `npm ci` if `node_modules/.bin/surfer` is missing, `npm run init` if
+  `engine/mozconfig` is missing), syncs en-US language packs into `engine/`,
+  then `npm run build`. Use this after a fresh worktree, a surfer reset, or
+  any change that touches native code.
+- `zen-build-ui` — incremental rebuild for JS/chrome changes only. Syncs
+  en-US packs and runs `npm run build:ui`. Much faster than `zen-build`; use
+  it when iterating on the chrome UI.
+
+After a build, launch with `npm start`.
+
+The flake also prefers `$HOME/.mozbuild/clang/bin/clang` over nix's
+clang-wrapper once `mach bootstrap` has fetched it — the wrapper mangles
+preprocessing of `.S` files (notably `engine/config/external/icu/data/icu_data.S`
+where `__APPLE__` stops firing). The override is guarded so a fresh
+unbootstrapped checkout still enters the shell cleanly.
 
 ## Workflows
 
 ### Sync from upstream
 
 ```bash
-# From anywhere in the repo
+cd /Users/zotavka/Developer/zen-browser-desktop    # already on zotavka/dev
 git fetch upstream
-git -C /Users/zotavka/Developer/zen-browser-desktop push origin upstream/dev:dev
-# origin/dev now mirrors upstream/dev.
-
-# In this worktree
+git push origin upstream/dev:dev                   # origin/dev mirrors upstream/dev
 git fetch origin
-git rebase origin/dev            # replay flake.nix + CLAUDE.md onto new upstream
+git rebase origin/dev                              # replay flake.nix/CLAUDE.md onto new upstream
 # Resolve any conflicts (usually none — these files are unique to this branch).
 git push --force-with-lease origin zotavka/dev
 ```
 
 If the rebase breaks the engine/ cache (surfer bumped Firefox rev, for
-example), delete it and let the next build rebuild from scratch:
+example), delete it and let the next `zen-build` regenerate it:
 
 ```bash
 trash engine node_modules
@@ -86,16 +106,16 @@ git worktree add \
   -b zotavka/dev-gh-123-feature zotavka/dev
 
 FEAT=/Users/zotavka/Developer/Workspaces/zotavka-dev-gh-123-feature-zen-browser-desktop
-SRC=/Users/zotavka/Developer/Workspaces/zotavka-dev-zen-browser-desktop
 
-# Warm-start the build by reusing the cache. Use `cp -a` (preserves mtimes so
-# surfer/mach incremental logic still works). A hardlink clone would be
-# faster but risks cross-contaminating the two worktrees' build state.
-cp -a "$SRC/engine" "$SRC/node_modules" "$FEAT/"
+# Warm-start the build by cloning the cache from this repo. `cp -c` asks for
+# APFS clonefile (O(1) on the same volume); it falls back to a real copy
+# across volumes. `-a` preserves mtimes so surfer/mach incremental logic
+# still works. Do NOT hardlink — that cross-contaminates build state.
+cp -ac engine node_modules "$FEAT/"
 
 cd "$FEAT"
-nix develop      # or direnv
-# ...hack, build, test...
+nix develop
+zen-build         # first full build in the feature tree
 ```
 
 ### Turn a tested feature into a clean PR branch
@@ -143,8 +163,11 @@ git push -u origin gh-123-feature
 | Task | Command |
 |---|---|
 | Enter dev shell | `nix develop` |
+| Full build | `zen-build` |
+| JS-only rebuild | `zen-build-ui` |
+| Launch built browser | `npm start` |
 | Sync upstream | `git fetch upstream && git push origin upstream/dev:dev` |
 | Rebase this branch | `git fetch origin && git rebase origin/dev` |
+| Warm build cache | `cp -ac engine node_modules <feat-worktree>/` |
 | New feature worktree | See "Start a feature test branch" above |
-| Warm build cache | `cp -a …/zotavka-dev-…/engine …/zotavka-dev-…/node_modules <feat>/` |
 | Promote to PR | See "Turn a tested feature into a clean PR branch" above |

@@ -1468,14 +1468,20 @@ class nsZenWorkspaces {
     this.saveWorkspace(workspace);
 
     // Reopen the tabs from the serialized state. setTabState on a fresh tab
-    // restores URL, history, scroll, form data, and userContextId.
+    // restores URL, history, scroll, form data, userContextId, and — because
+    // Zen's SessionStore patches capture `zenWorkspace` — the
+    // `zen-workspace-id` chrome attribute. After setTabState we still need
+    // to move the tab into the correct workspace's DOM section (the tab is
+    // otherwise parked in the *active* workspace container, per
+    // onTabBrowserInserted's fall-through behavior).
     const allStates = [
       ...(entry.pinnedTabs || []).map(s => ({ state: s, pinned: true })),
       ...(entry.tabs || []).map(s => ({ state: s, pinned: false })),
     ];
     for (const { state, pinned } of allStates) {
       try {
-        const userContextId = state.userContextId ?? workspace.containerTabId ?? 0;
+        const userContextId =
+          state.userContextId ?? workspace.containerTabId ?? 0;
         const tab = gBrowser.addTrustedTab("about:blank", {
           createLazyBrowser: true,
           skipAnimation: true,
@@ -1484,14 +1490,16 @@ class nsZenWorkspaces {
           // correct workspace silently.
           inBackground: true,
         });
-        tab.setAttribute("zen-workspace-id", workspace.uuid);
         if (pinned) {
-          // SessionStore.setTabState handles pinned-ness via state.pinned,
-          // but we also need the DOM pinned attribute set so the tab ends up
-          // in the pinned container. gBrowser.pinTab is the supported path.
+          // Pin before setTabState so the DOM ends up in the pinned container.
           gBrowser.pinTab(tab);
         }
         SessionStore.setTabState(tab, JSON.stringify(state));
+        // Belt and suspenders: ensure the attribute points at *our* workspace
+        // even if the serialized state happens to be missing zenWorkspace.
+        tab.setAttribute("zen-workspace-id", workspace.uuid);
+        // Move into the correct workspace DOM section.
+        this.moveTabToWorkspace(tab, workspace.uuid);
       } catch (e) {
         console.error("Failed to restore tab from trash:", e);
       }

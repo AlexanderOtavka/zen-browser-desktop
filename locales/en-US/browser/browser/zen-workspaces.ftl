@@ -98,3 +98,31 @@ zen-panel-ui-workspaces-change-forward =
 
 zen-panel-ui-workspaces-change-back =
     .label = Previous Space
+
+# "Recently Deleted Workspaces" trash UI
+
+zen-workspaces-restore-workspace-label =
+    .label = Restore Deleted Space
+
+zen-workspaces-restore-workspace-empty =
+    .label = (nothing to restore)
+
+# Single entry inside the "Restore Deleted Space" submenu.
+# $name is the workspace's display name, $count is the number of tabs that
+# were open in it when it was deleted (pinned + unpinned, excluding essentials).
+zen-workspaces-restore-workspace-entry =
+    .label = { $name } — { $count ->
+        [one] { $count } tab
+       *[other] { $count } tabs
+    }
+
+zen-workspaces-clear-deleted-label =
+    .label = Clear Recently Deleted Spaces
+
+zen-workspaces-clear-deleted-title = Clear recently deleted Spaces?
+zen-workspaces-clear-deleted-body = This will permanently remove all Spaces currently in the Recently Deleted list. This action cannot be undone.
+
+# Toast shown after a Space is soft-deleted. $name is the Space's name.
+zen-workspaces-workspace-deleted-toast-message = "{ $name }" moved to Recently Deleted.
+zen-workspaces-workspace-deleted-undo-button =
+    .label = Undo

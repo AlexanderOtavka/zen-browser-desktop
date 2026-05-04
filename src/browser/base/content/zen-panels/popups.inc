@@ -33,6 +33,16 @@
   <menuseparator/>
   <menuitem data-l10n-id="zen-panel-ui-workspaces-create" command="cmd_zenOpenWorkspaceCreation"/>
   <menuitem id="context_zenDeleteWorkspace" data-l10n-id="zen-workspaces-panel-context-delete" command="cmd_zenCtxDeleteWorkspace"/>
+  <menuseparator id="context_zenTrashSeparator" hidden="true"/>
+  <menu id="context_zenRestoreWorkspace"
+        data-l10n-id="zen-workspaces-restore-workspace-label"
+        hidden="true">
+    <menupopup id="context_zenRestoreWorkspacePopup"/>
+  </menu>
+  <menuitem id="context_zenClearDeletedWorkspaces"
+            data-l10n-id="zen-workspaces-clear-deleted-label"
+            hidden="true"
+            command="cmd_zenClearDeletedWorkspaces"/>
 </menupopup>
 
 <menupopup id="zenFolderActions">

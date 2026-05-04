@@ -87,6 +87,9 @@ document.addEventListener(
           case "cmd_zenCtxDeleteWorkspace":
             gZenWorkspaces.contextDeleteWorkspace(event);
             break;
+          case "cmd_zenClearDeletedWorkspaces":
+            gZenWorkspaces.contextClearDeletedWorkspaces(event);
+            break;
           case "cmd_zenChangeWorkspaceName":
             gZenVerticalTabsManager.renameTabStart({
               target: gZenWorkspaces.activeWorkspaceIndicator.querySelector(

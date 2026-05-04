@@ -62,7 +62,12 @@
           rustToolchain
           pkgs.gnutar           # mach's tar invocations assume GNU tar
           pkgs.mercurial        # mach uses hg for some toolchain fetches
-          pkgs.watchman         # speeds up mach's file scanning
+          # pkgs.watchman — disabled on aarch64-darwin: watchman pulls
+          #   in fbthrift, whose thrift1 codegen binary is SIGKILL'd
+          #   (code 137) during eden_config codegen — looks like an
+          #   ad-hoc signing issue in the nixpkgs build. mach falls
+          #   back to a manual file scan without it; re-enable once
+          #   nixpkgs ships a usable thrift1.
           pkgs.cairo            # runtime dep surfaced by the plan
           pkgs.pkg-config
           pkgs.git

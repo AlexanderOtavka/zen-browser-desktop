@@ -730,7 +730,10 @@ class nsZenWorkspaces {
   }
 
   getWorkspacesForSessionStore() {
-    const spaces = this.getWorkspaces();
+    // Session store must persist soft-deleted workspaces too, otherwise
+    // restart drops the entire trash. (deletedAt/deletedReason come along
+    // as ordinary fields on the spread below.)
+    const spaces = this.getWorkspaces({ includeDeleted: true });
     let spacesForSS = [];
     for (const space of spaces) {
       let newSpace = { ...space };

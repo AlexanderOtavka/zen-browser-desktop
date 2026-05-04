@@ -3308,9 +3308,11 @@ class nsZenWorkspaces {
       this._workspaceCache &&
       !fromExternal
     ) {
-      // Find all workspaces that match the given userContextId
+      // Find all live workspaces that match the given userContextId.
+      // Soft-deleted workspaces must not auto-attract new container tabs.
       const matchingWorkspaces = this._workspaceCache.filter(
-        workspace => workspace.containerTabId === userContextId
+        workspace =>
+          workspace.containerTabId === userContextId && !workspace.deletedAt
       );
 
       // Check if exactly one workspace matches
@@ -3338,14 +3340,14 @@ class nsZenWorkspaces {
   getTabsToExclude(aTab) {
     const tabWorkspaceId = aTab.getAttribute("zen-workspace-id");
     const containerId = aTab.getAttribute("usercontextid") ?? "0";
-    // Return all tabs that are not on the same workspace
+    // Return all tabs that are not on the same (live) workspace.
     return gBrowser.tabs.filter(
       tab =>
         !this._shouldShowTab(
           tab,
           tabWorkspaceId,
           containerId,
-          this._workspaceCache
+          this.getWorkspaces()
         ) && !tab.hasAttribute("zen-empty-tab")
     );
   }
@@ -3557,9 +3559,12 @@ class nsZenWorkspaces {
           const containerTabId = parseInt(
             tab.parentNode.getAttribute("container")
           );
-          // +0 to convert to number
+          // +0 to convert to number. Only consider live workspaces --
+          // a soft-deleted workspace shouldn't claim an essential tab.
           workspaceToSwitch = this._workspaceCache.find(
-            workspace => workspace.containerTabId + 0 === containerTabId
+            workspace =>
+              workspace.containerTabId + 0 === containerTabId &&
+              !workspace.deletedAt
           );
         } else {
           workspaceToSwitch = this.getWorkspaceFromId(

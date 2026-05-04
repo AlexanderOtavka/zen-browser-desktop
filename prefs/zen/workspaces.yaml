@@ -37,7 +37,19 @@
 
 - name: zen.workspaces.debug
   value: "@cond"
-  condition: "!defined(MOZILLA_OFFICIAL)" # Section: Pinned tabs management
+  condition: "!defined(MOZILLA_OFFICIAL)"
+
+# Section: Recently deleted workspaces (trash)
+- name: zen.workspaces.trash.retention-days
+  value: 30
+
+- name: zen.workspaces.trash.max-entries
+  value: 10
+
+- name: zen.workspaces.trash.undo-toast-timeout-ms
+  value: 8000
+
+# Section: Pinned tabs management
 
 - name: zen.pinned-tab-manager.wheel-close-if-pending
   value: true

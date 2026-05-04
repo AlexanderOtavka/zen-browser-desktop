@@ -42,6 +42,18 @@ class nsZenWorkspaces {
   #activeWorkspace = "";
 
   _workspaceCache = [];
+  /**
+   * Cache of soft-deleted workspaces ("Recently Deleted Workspaces").
+   * Each entry is an object of the shape:
+   *   {
+   *     workspace: {...},   // the original workspace record
+   *     deletedAt: number,  // ms epoch
+   *     tabs: [...],        // SessionStore tab states, unpinned
+   *     pinnedTabs: [...],  // SessionStore tab states, pinned
+   *   }
+   * Persisted under `sidebar.spaces_trash` by ZenSessionManager.
+   */
+  _trashCache = [];
 
   #lastScrollTime = 0;
   #currentSpaceSwitchContext = {
@@ -117,6 +129,24 @@ class nsZenWorkspaces {
       "shouldOpenNewTabIfLastUnpinnedTabIsClosed",
       "zen.workspaces.open-new-tab-if-last-unpinned-tab-is-closed",
       false
+    );
+    XPCOMUtils.defineLazyPreferenceGetter(
+      this,
+      "trashRetentionDays",
+      "zen.workspaces.trash.retention-days",
+      30
+    );
+    XPCOMUtils.defineLazyPreferenceGetter(
+      this,
+      "trashMaxEntries",
+      "zen.workspaces.trash.max-entries",
+      10
+    );
+    XPCOMUtils.defineLazyPreferenceGetter(
+      this,
+      "trashUndoToastTimeoutMs",
+      "zen.workspaces.trash.undo-toast-timeout-ms",
+      8000
     );
     this.containerSpecificEssentials = Services.prefs.getBoolPref(
       "zen.workspaces.separate-essentials",
@@ -741,6 +771,23 @@ class nsZenWorkspaces {
     this._workspaceCache = spacesFromStore.length
       ? [...spacesFromStore]
       : [this.#createWorkspaceData("Space", undefined)];
+    // Restore the trash cache, defaulting to an empty array if absent in
+    // the session file. `spaces_trash` is the on-disk key.
+    const trashFromStore = Array.isArray(aWinData.spaces_trash)
+      ? aWinData.spaces_trash
+      : [];
+    this._trashCache = trashFromStore
+      .filter(entry => entry && entry.workspace && entry.workspace.uuid)
+      .map(entry => ({
+        workspace: { ...entry.workspace },
+        deletedAt:
+          typeof entry.deletedAt === "number" ? entry.deletedAt : Date.now(),
+        tabs: Array.isArray(entry.tabs) ? entry.tabs : [],
+        pinnedTabs: Array.isArray(entry.pinnedTabs) ? entry.pinnedTabs : [],
+      }));
+    // Sweep any entries that aged out while the browser was closed, and
+    // enforce max-entries.
+    this.sweepExpiredTrash();
     this.activeWorkspace =
       aWinData.activeZenSpace || this._workspaceCache[0].uuid;
     let promise = this.#initializeWorkspaces();
@@ -1193,6 +1240,7 @@ class nsZenWorkspaces {
     } else {
       separator.hidden = true;
     }
+    this.#refreshDeletedWorkspacesMenu();
     event.target.addEventListener(
       "popuphidden",
       () => {
@@ -1200,6 +1248,68 @@ class nsZenWorkspaces {
       },
       { once: true }
     );
+  }
+
+  /**
+   * (Re)populate the "Restore Deleted Workspace" submenu and the
+   * "Clear Recently Deleted Workspaces" menuitem in the workspace context
+   * menu. Both are hidden when the trash is empty.
+   */
+  #refreshDeletedWorkspacesMenu() {
+    const submenu = document.getElementById("context_zenRestoreWorkspace");
+    const popup = document.getElementById("context_zenRestoreWorkspacePopup");
+    const clearItem = document.getElementById(
+      "context_zenClearDeletedWorkspaces"
+    );
+    const separator = document.getElementById("context_zenTrashSeparator");
+    if (!submenu || !popup || !clearItem || !separator) {
+      return;
+    }
+    // Rebuild from scratch each time so label counts/ordering stay accurate.
+    popup.replaceChildren();
+    const entries = this.getDeletedWorkspaces();
+    if (entries.length === 0) {
+      submenu.hidden = true;
+      clearItem.hidden = true;
+      separator.hidden = true;
+      // Provide a dummy disabled entry anyway in case the submenu is opened.
+      const empty = document.createXULElement("menuitem");
+      empty.setAttribute("disabled", "true");
+      document.l10n.setAttributes(
+        empty,
+        "zen-workspaces-restore-workspace-empty"
+      );
+      popup.appendChild(empty);
+      return;
+    }
+    submenu.hidden = false;
+    clearItem.hidden = false;
+    separator.hidden = false;
+    for (const entry of entries) {
+      const ws = entry.workspace;
+      const item = document.createXULElement("menuitem");
+      item.classList.add("zen-workspace-trash-menu-item");
+      item.setAttribute("zen-trash-workspace-id", ws.uuid);
+      const tabCount =
+        (entry.tabs?.length || 0) + (entry.pinnedTabs?.length || 0);
+      document.l10n.setAttributes(
+        item,
+        "zen-workspaces-restore-workspace-entry",
+        {
+          name: ws.name || "",
+          count: tabCount,
+        }
+      );
+      const iconIsSvg = ws.icon && ws.icon.endsWith(".svg");
+      if (iconIsSvg) {
+        item.setAttribute("image", ws.icon);
+        item.classList.add("zen-workspace-context-icon");
+      }
+      item.addEventListener("command", e => {
+        this.contextRestoreDeletedWorkspace(e);
+      });
+      popup.appendChild(item);
+    }
   }
 
   updateWorkspaceActionsMenuContainer(event) {
@@ -1251,6 +1361,238 @@ class nsZenWorkspaces {
     this.#propagateWorkspaceData(workspacesData);
     gBrowser.tabContainer._invalidateCachedVisibleTabs();
     return promise;
+  }
+
+  /**
+   * Snapshot the SessionStore state of all workspace-owned tabs
+   * before they are closed by `removeWorkspace`. Called by `softDeleteWorkspace`.
+   *
+   * @param {string} workspaceID The uuid of the workspace being deleted.
+   * @returns {{tabs: object[], pinnedTabs: object[]}} serialized tab states,
+   *          split by pinned-ness. Essentials are intentionally excluded.
+   */
+  #snapshotWorkspaceTabs(workspaceID) {
+    const tabs = [];
+    const pinnedTabs = [];
+    for (const tab of this.allStoredTabs) {
+      if (tab.getAttribute("zen-workspace-id") !== workspaceID) {
+        continue;
+      }
+      if (tab.hasAttribute("zen-essential")) {
+        continue;
+      }
+      if (tab.hasAttribute("zen-empty-tab") && !tab.group) {
+        // Skip placeholder empty tabs that aren't part of a folder.
+        continue;
+      }
+      let state;
+      try {
+        state = JSON.parse(SessionStore.getTabState(tab));
+      } catch (e) {
+        console.error("Failed to snapshot tab state for trash:", e);
+        continue;
+      }
+      if (!state) {
+        continue;
+      }
+      if (tab.pinned) {
+        pinnedTabs.push(state);
+      } else {
+        tabs.push(state);
+      }
+    }
+    return { tabs, pinnedTabs };
+  }
+
+  /**
+   * Soft-delete a workspace: snapshot its tabs into `_trashCache`, then run
+   * the normal hard-delete path (close tabs, remove the workspace record).
+   * Callers typically use this via `contextDeleteWorkspace`.
+   *
+   * @param {string} workspaceID The uuid of the workspace to soft-delete.
+   * @returns {Promise<{entry: object, workspace: object} | null>}
+   *          Resolves to the trash entry and original workspace, or null
+   *          if the workspace could not be found.
+   */
+  async softDeleteWorkspace(workspaceID) {
+    if (this.privateWindowOrDisabled) {
+      return null;
+    }
+    const workspace = this.getWorkspaceFromId(workspaceID);
+    if (!workspace) {
+      return null;
+    }
+    const snapshot = this.#snapshotWorkspaceTabs(workspaceID);
+    const entry = {
+      // Deep-clone the workspace record so later mutations don't affect trash.
+      workspace: Cu.cloneInto(workspace, {}),
+      deletedAt: Date.now(),
+      tabs: snapshot.tabs,
+      pinnedTabs: snapshot.pinnedTabs,
+    };
+    this._trashCache.push(entry);
+    // Close tabs + remove record (hard-delete path).
+    await this.removeWorkspace(workspaceID);
+    // Prune anything that aged out of the retention window, and enforce the
+    // max-entries cap *after* pushing this entry so newly-added entries are
+    // always preserved until the retention window bumps them off.
+    this.sweepExpiredTrash();
+    this.#propagateWorkspaceData();
+    return { entry, workspace };
+  }
+
+  /**
+   * Restore a previously soft-deleted workspace. Re-inserts the workspace
+   * record into `_workspaceCache` and reopens its tabs via SessionStore.
+   * Essentials were never snapshotted — they already live in the container.
+   *
+   * @param {string} workspaceID The uuid of the workspace to restore.
+   * @returns {Promise<object|null>} Resolves to the restored workspace record,
+   *          or null if the trash entry could not be found.
+   */
+  async restoreDeletedWorkspace(workspaceID) {
+    if (this.privateWindowOrDisabled) {
+      return null;
+    }
+    const index = this._trashCache.findIndex(
+      entry => entry?.workspace?.uuid === workspaceID
+    );
+    if (index === -1) {
+      return null;
+    }
+    const entry = this._trashCache[index];
+    const workspace = entry.workspace;
+
+    // Re-insert the workspace record *before* opening tabs so that the tabs
+    // get placed into a live workspace element rather than counted as zombies.
+    this.saveWorkspace(workspace);
+
+    // Reopen the tabs from the serialized state. setTabState on a fresh tab
+    // restores URL, history, scroll, form data, and userContextId.
+    const allStates = [
+      ...(entry.pinnedTabs || []).map(s => ({ state: s, pinned: true })),
+      ...(entry.tabs || []).map(s => ({ state: s, pinned: false })),
+    ];
+    for (const { state, pinned } of allStates) {
+      try {
+        const userContextId = state.userContextId ?? workspace.containerTabId ?? 0;
+        const tab = gBrowser.addTrustedTab("about:blank", {
+          createLazyBrowser: true,
+          skipAnimation: true,
+          userContextId,
+          // Don't implicitly select: we only want to place the tab in the
+          // correct workspace silently.
+          inBackground: true,
+        });
+        tab.setAttribute("zen-workspace-id", workspace.uuid);
+        if (pinned) {
+          // SessionStore.setTabState handles pinned-ness via state.pinned,
+          // but we also need the DOM pinned attribute set so the tab ends up
+          // in the pinned container. gBrowser.pinTab is the supported path.
+          gBrowser.pinTab(tab);
+        }
+        SessionStore.setTabState(tab, JSON.stringify(state));
+      } catch (e) {
+        console.error("Failed to restore tab from trash:", e);
+      }
+    }
+
+    // Drop the trash entry.
+    this._trashCache.splice(index, 1);
+    this.#propagateWorkspaceData();
+    return workspace;
+  }
+
+  /**
+   * Permanently clear all entries from the trash.
+   */
+  clearDeletedWorkspaces() {
+    if (this.privateWindowOrDisabled) {
+      return;
+    }
+    this._trashCache = [];
+    this.#propagateWorkspaceData();
+  }
+
+  /**
+   * Permanently drop a single entry from the trash without restoring it.
+   *
+   * @param {string} workspaceID uuid of the trash entry to drop.
+   */
+  forgetDeletedWorkspace(workspaceID) {
+    if (this.privateWindowOrDisabled) {
+      return;
+    }
+    const index = this._trashCache.findIndex(
+      entry => entry?.workspace?.uuid === workspaceID
+    );
+    if (index === -1) {
+      return;
+    }
+    this._trashCache.splice(index, 1);
+    this.#propagateWorkspaceData();
+  }
+
+  /**
+   * Drop trash entries older than the retention window, then trim to the
+   * configured max-entries cap (oldest first). Pref-driven; called on
+   * startup and after every `softDeleteWorkspace`.
+   */
+  sweepExpiredTrash() {
+    if (this.privateWindowOrDisabled) {
+      return;
+    }
+    if (!Array.isArray(this._trashCache) || this._trashCache.length === 0) {
+      return;
+    }
+    const retentionDays = Math.max(0, this.trashRetentionDays ?? 30);
+    const maxEntries = Math.max(0, this.trashMaxEntries ?? 10);
+    const cutoff =
+      retentionDays > 0
+        ? Date.now() - retentionDays * 24 * 60 * 60 * 1000
+        : -Infinity;
+    let pruned = this._trashCache.filter(
+      entry =>
+        entry &&
+        typeof entry.deletedAt === "number" &&
+        entry.deletedAt >= cutoff &&
+        entry.workspace &&
+        entry.workspace.uuid
+    );
+    if (maxEntries > 0 && pruned.length > maxEntries) {
+      // Keep the newest N entries: sort by deletedAt ascending and drop
+      // from the front.
+      pruned.sort((a, b) => a.deletedAt - b.deletedAt);
+      pruned = pruned.slice(pruned.length - maxEntries);
+      // Preserve original insertion-ish order (deletedAt ascending).
+    }
+    if (pruned.length !== this._trashCache.length) {
+      this._trashCache = pruned;
+    }
+  }
+
+  /**
+   * Return a clone of the trash cache, sorted newest-first. Intended for
+   * rendering in the context menu.
+   */
+  getDeletedWorkspaces() {
+    return this._trashCache
+      .slice()
+      .sort((a, b) => (b.deletedAt || 0) - (a.deletedAt || 0));
+  }
+
+  /**
+   * Return a clone of the trash cache for serialization into the session
+   * store. Shape matches the on-disk representation under
+   * `sidebar.spaces_trash`.
+   */
+  getDeletedWorkspacesForSessionStore() {
+    return this._trashCache.map(entry => ({
+      workspace: { ...entry.workspace },
+      deletedAt: entry.deletedAt,
+      tabs: entry.tabs || [],
+      pinnedTabs: entry.pinnedTabs || [],
+    }));
   }
 
   isWorkspaceActive(workspace) {
@@ -2879,15 +3221,78 @@ class nsZenWorkspaces {
   async contextDeleteWorkspace() {
     const workspaceId =
       this.#contextMenuData?.workspaceId || this.activeWorkspace;
+    const workspace = this.getWorkspaceFromId(workspaceId);
+    if (!workspace) {
+      return;
+    }
     const [title, body] = await document.l10n.formatValues([
       { id: "zen-workspaces-delete-workspace-title" },
       {
         id: "zen-workspaces-delete-workspace-body",
-        args: { name: this.getWorkspaceFromId(workspaceId).name },
+        args: { name: workspace.name },
       },
     ]);
     if (Services.prompt.confirm(null, title, body)) {
-      this.removeWorkspace(workspaceId);
+      const workspaceName = workspace.name;
+      const result = await this.softDeleteWorkspace(workspaceId);
+      if (result) {
+        this.#showWorkspaceDeletedToast(workspaceId, workspaceName);
+      }
+    }
+  }
+
+  /**
+   * Show an "undo" toast after a soft-delete. Clicking the button restores
+   * the workspace from the trash.
+   */
+  #showWorkspaceDeletedToast(workspaceId, workspaceName) {
+    try {
+      gZenUIManager.showToast("zen-workspaces-workspace-deleted-toast-message", {
+        l10nArgs: { name: workspaceName },
+        timeout: this.trashUndoToastTimeoutMs || 8000,
+        button: {
+          id: "zen-workspaces-workspace-deleted-undo-button",
+          command: () => {
+            this.restoreDeletedWorkspace(workspaceId);
+          },
+        },
+      });
+      // The default showToast button has no label of its own, so set one
+      // explicitly via Fluent. Selector is keyed on the button id we set above.
+      const btn = document.getElementById(
+        "zen-workspaces-workspace-deleted-undo-button"
+      );
+      if (btn) {
+        document.l10n.setAttributes(
+          btn,
+          "zen-workspaces-workspace-deleted-undo-button"
+        );
+      }
+    } catch (e) {
+      console.error("Failed to show workspace-deleted toast:", e);
+    }
+  }
+
+  async contextRestoreDeletedWorkspace(event) {
+    const workspaceId = event?.target
+      ?.closest("menuitem")
+      ?.getAttribute("zen-trash-workspace-id");
+    if (!workspaceId) {
+      return;
+    }
+    await this.restoreDeletedWorkspace(workspaceId);
+  }
+
+  async contextClearDeletedWorkspaces() {
+    if (!this._trashCache.length) {
+      return;
+    }
+    const [title, body] = await document.l10n.formatValues([
+      { id: "zen-workspaces-clear-deleted-title" },
+      { id: "zen-workspaces-clear-deleted-body" },
+    ]);
+    if (Services.prompt.confirm(null, title, body)) {
+      this.clearDeletedWorkspaces();
     }
   }
 

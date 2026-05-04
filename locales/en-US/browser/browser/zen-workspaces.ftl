@@ -124,7 +124,10 @@ zen-workspaces-clear-deleted-menuitem =
     .label = Clear Recently Deleted Spaces
 
 zen-workspaces-clear-deleted-title = Clear Recently Deleted Spaces?
-zen-workspaces-clear-deleted-body = This will permanently delete { $count } space(s) and close their tabs. This action cannot be undone.
+zen-workspaces-clear-deleted-body = This will permanently delete { $count ->
+    [one] { $count } space
+   *[other] { $count } spaces
+} and close their tabs. This action cannot be undone.
 
 # Toast shown after soft-deleting a workspace. $name is the space's
 # user-visible name.

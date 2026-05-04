@@ -781,8 +781,23 @@ class nsZenWorkspaces {
     this._workspaceCache = spacesFromStore.length
       ? [...spacesFromStore]
       : [this.#createWorkspaceData("Space", undefined)];
-    this.activeWorkspace =
-      aWinData.activeZenSpace || this._workspaceCache[0].uuid;
+    // Never resume pointing at a soft-deleted workspace. If the last
+    // active space got soft-deleted in a previous session, or if the
+    // stored id no longer resolves to a live workspace, fall back to
+    // the first live entry (creating one if somehow nothing is live).
+    const liveWorkspaces = this._workspaceCache.filter(w => !w.deletedAt);
+    if (!liveWorkspaces.length) {
+      const fresh = this.#createWorkspaceData("Space", undefined);
+      this._workspaceCache.push(fresh);
+      liveWorkspaces.push(fresh);
+    }
+    const preferredActive = aWinData.activeZenSpace;
+    const preferredIsLive =
+      preferredActive &&
+      liveWorkspaces.some(w => w.uuid === preferredActive);
+    this.activeWorkspace = preferredIsLive
+      ? preferredActive
+      : liveWorkspaces[0].uuid;
     let promise = this.#initializeWorkspaces();
     for (const workspace of spacesFromStore) {
       const element = this.workspaceElement(workspace.uuid);
@@ -803,6 +818,13 @@ class nsZenWorkspaces {
     }
     promise.finally(() => {
       this.#hasInitialized = true;
+      // Enforce the soft-delete retention policy on startup so entries
+      // that aged out while the browser was closed get cleaned up.
+      try {
+        this.sweepExpiredTrash();
+      } catch (e) {
+        console.error("gZenWorkspaces: sweepExpiredTrash failed", e);
+      }
     });
     return promise;
   }

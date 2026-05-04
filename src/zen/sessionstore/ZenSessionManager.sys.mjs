@@ -773,6 +773,45 @@ export class nsZenSessionManager {
     sidebarData.splitViewData = firstWindow.splitViewData;
     sidebarData.groups = firstWindow.groups;
     sidebarData.spaces = firstWindow.spaces;
+    // Preserve the "Recently Deleted Workspaces" trash across sessions. The
+    // list lives only in memory while the browser is running; pulling it out
+    // of gZenWorkspaces at collect time avoids having to extend the
+    // SessionStore patch to carry a new winData field. Fall back to whatever
+    // we already had on-disk if we can't find a live window to query.
+    sidebarData.spaces_trash = this.#collectSpacesTrash(
+      sidebarData.spaces_trash
+    );
+  }
+
+  /**
+   * Pull the current trash from any live browser window's gZenWorkspaces,
+   * falling back to the previously-persisted value if none are available
+   * (e.g. during shutdown, when windows may already be gone).
+   *
+   * @param {Array} aPrevious Previously stored trash, used as a fallback.
+   */
+  #collectSpacesTrash(aPrevious) {
+    try {
+      const windows = Services.wm.getEnumerator("navigator:browser");
+      while (windows.hasMoreElements()) {
+        const win = windows.getNext();
+        if (
+          win.closed ||
+          !win.gZenWorkspaces ||
+          win.gZenWorkspaces.privateWindowOrDisabled
+        ) {
+          continue;
+        }
+        if (typeof win.gZenWorkspaces.getDeletedWorkspacesForSessionStore
+          !== "function") {
+          continue;
+        }
+        return win.gZenWorkspaces.getDeletedWorkspacesForSessionStore();
+      }
+    } catch (e) {
+      console.error("ZenSessionManager: failed to collect trash:", e);
+    }
+    return Array.isArray(aPrevious) ? aPrevious : [];
   }
 
   /**
@@ -819,11 +858,13 @@ export class nsZenSessionManager {
     // Folders are always pinned, so we dont need to check for the pinned state here.
     aWindowData.folders = sidebar.folders;
     aWindowData.spaces = sidebar.spaces;
+    aWindowData.spaces_trash = sidebar.spaces_trash || [];
     this.log("Restored sidebar data into window", {
       tabs: aWindowData.tabs?.length || 0,
       groups: aWindowData.groups?.length || 0,
       folders: aWindowData.folders?.length || 0,
       spaces: aWindowData.spaces?.length || 0,
+      spaces_trash: aWindowData.spaces_trash?.length || 0,
     });
   }
 
@@ -916,6 +957,7 @@ export class nsZenSessionManager {
     this.log("Restoring empty session with Zen session data");
     aWindow.gZenWorkspaces.restoreWorkspacesFromSessionStore({
       spaces: this.#sidebarWithoutCloning.spaces || [],
+      spaces_trash: this.#sidebarWithoutCloning.spaces_trash || [],
     });
   }
 

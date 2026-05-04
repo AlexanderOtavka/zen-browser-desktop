@@ -434,7 +434,7 @@ export class nsZenWorkspace extends MozXULElement {
     const popup = document.getElementById("zenMoveTabsToSyncedWorkspacePopup");
     popup.innerHTML = "";
 
-    const workspaces = gZenWorkspaces.getWorkspaces(true);
+    const workspaces = gZenWorkspaces.getWorkspaces({ lieToMe: true });
     for (const workspace of workspaces) {
       const item = gZenWorkspaces.generateMenuItemForWorkspace(workspace);
       item.addEventListener("command", async () => {

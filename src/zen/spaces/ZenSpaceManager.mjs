@@ -679,14 +679,54 @@ class nsZenWorkspaces {
     }
   }
 
-  getWorkspaces(lieToMe = false) {
+  /**
+   * Return the live (non-soft-deleted) workspaces. Soft-deleted workspaces
+   * carry a `deletedAt` timestamp and are excluded by default so that all
+   * existing callers silently get only live workspaces.
+   *
+   * @param {object} [opts]
+   * @param {boolean} [opts.lieToMe] If true, read the spaces as
+   *   persisted in session store (used during some recovery paths).
+   * @param {boolean} [opts.includeDeleted] If true, include soft-deleted
+   *   workspaces in the returned array. Required for: the zombie-tab
+   *   sweeper, the retention sweeper, the Recently Deleted UI, and
+   *   anywhere else that legitimately needs the full picture.
+   */
+  getWorkspaces({ lieToMe = false, includeDeleted = false } = {}) {
+    let spaces;
     if (lieToMe) {
       const { ZenSessionStore } = ChromeUtils.importESModule(
         "resource:///modules/zen/ZenSessionManager.sys.mjs"
       );
-      return ZenSessionStore.getClonedSpaces();
+      spaces = ZenSessionStore.getClonedSpaces();
+    } else {
+      spaces = [...this._workspaceCache];
     }
-    return [...this._workspaceCache];
+    if (!includeDeleted) {
+      spaces = spaces.filter(ws => !ws.deletedAt);
+    }
+    return spaces;
+  }
+
+  /**
+   * Convenience: return the soft-deleted workspaces, newest-deleted first.
+   */
+  getDeletedWorkspaces() {
+    return this._workspaceCache
+      .filter(ws => !!ws.deletedAt)
+      .sort((a, b) => b.deletedAt - a.deletedAt);
+  }
+
+  /**
+   * Lookup a workspace by id regardless of soft-delete state. Used by
+   * restore / purge code paths that need to reach deleted entries.
+   */
+  getWorkspaceFromIdIncludingDeleted(id) {
+    try {
+      return this._workspaceCache.find(workspace => workspace.uuid === id);
+    } catch {
+      return null;
+    }
   }
 
   getWorkspacesForSessionStore() {
@@ -1002,7 +1042,12 @@ class nsZenWorkspaces {
 
   async #clearAnyZombieTabs() {
     const tabs = this.allStoredTabs;
-    const workspaces = this.getWorkspaces();
+    // IMPORTANT: include soft-deleted workspaces here. Their tabs should
+    // stay put until either the user restores the workspace (lazy reload)
+    // or the retention sweeper hard-deletes the workspace (which closes
+    // the tabs). If we filtered soft-deleted workspaces out here, every
+    // soft-delete would cause tab loss on next restart.
+    const workspaces = this.getWorkspaces({ includeDeleted: true });
     for (let tab of tabs) {
       const workspaceID = tab.getAttribute("zen-workspace-id");
       if (

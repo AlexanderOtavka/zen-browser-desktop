@@ -707,9 +707,14 @@ window.gZenUIManager = {
   _createToastElement(messageId, options) {
     const createButton = () => {
       const button = document.createXULElement("button");
-      button.id = options.button.id;
+      if (options.button.id) {
+        button.id = options.button.id;
+      }
       button.classList.add("footer-button");
       button.classList.add("primary");
+      if (options.button.labelId) {
+        document.l10n.setAttributes(button, options.button.labelId);
+      }
       button.addEventListener("command", options.button.command);
       return button;
     };

@@ -1278,12 +1278,31 @@ class nsZenWorkspaces {
     this.#propagateWorkspaceData();
   }
 
+  /**
+   * Back-compat entry point. External callers (and tests) expect
+   * `removeWorkspace` to "make the workspace go away" -- since Option B
+   * introduces the soft-delete layer, we route through it by default so
+   * the workspace disappears from UI but can still be restored.
+   *
+   * Code paths that really do want to drop the record and close its
+   * tabs (the retention sweeper, "Clear Recently Deleted") should call
+   * `hardDeleteWorkspace` directly.
+   */
   removeWorkspace(windowID) {
+    return this.softDeleteWorkspace(windowID);
+  }
+
+  /**
+   * Permanently delete a workspace: close its owned tabs and drop the
+   * record from the cache. Used by the retention sweeper and by the
+   * "Clear Recently Deleted Workspaces" UI. Not exposed to normal user
+   * delete flows -- those go through softDeleteWorkspace.
+   */
+  hardDeleteWorkspace(windowID) {
     let { promise, resolve } = Promise.withResolvers();
     this.#deleteWorkspaceOwnedTabs(windowID);
-    let workspacesData = this.getWorkspaces();
-    // Remove the workspace from the cache
-    workspacesData = workspacesData.filter(
+    // Drop the workspace record entirely.
+    const workspacesData = this._workspaceCache.filter(
       workspace => workspace.uuid !== windowID
     );
     window.addEventListener(
@@ -1296,6 +1315,140 @@ class nsZenWorkspaces {
     this.#propagateWorkspaceData(workspacesData);
     gBrowser.tabContainer._invalidateCachedVisibleTabs();
     return promise;
+  }
+
+  /**
+   * Soft-delete a workspace: mark it `deletedAt`, unload its tabs
+   * (freeing memory while preserving tab metadata), and reconcile the
+   * active workspace so the UI never points at a deleted entry.
+   *
+   * Tabs remain in the tab strip (in their pending/unloaded state,
+   * tagged with this workspace's id) so the #clearAnyZombieTabs
+   * sweeper must continue to treat the workspace as "existing"; see
+   * that function for the requirement to pass includeDeleted:true.
+   *
+   * On restore, deletedAt is cleared and tabs lazy-load on next switch.
+   * On expiry, hardDeleteWorkspace is invoked and the tabs are closed.
+   */
+  async softDeleteWorkspace(windowID) {
+    const workspace = this.getWorkspaceFromIdIncludingDeleted(windowID);
+    if (!workspace || workspace.deletedAt) {
+      return;
+    }
+
+    // If the soft-deleted workspace is active, switch to another live
+    // one first so propagateWorkspaces doesn't have to unwind an
+    // invalid active state.
+    if (this.isWorkspaceActive(workspace)) {
+      const liveWorkspaces = this.getWorkspaces().filter(
+        w => w.uuid !== windowID
+      );
+      const replacement = liveWorkspaces[0] || null;
+      if (replacement) {
+        await this.changeWorkspace(replacement);
+      }
+    }
+
+    // Unload the tabs: mirrors unloadWorkspace's filter but scoped to
+    // the workspace being deleted regardless of context.
+    const tabsToUnload = this.allStoredTabs.filter(
+      tab =>
+        tab.getAttribute("zen-workspace-id") === windowID &&
+        !tab.hasAttribute("zen-empty-tab") &&
+        !tab.hasAttribute("zen-essential") &&
+        !tab.hasAttribute("pending")
+    );
+    if (tabsToUnload.length) {
+      try {
+        await gBrowser.explicitUnloadTabs(tabsToUnload);
+      } catch (e) {
+        console.error("gZenWorkspaces: error unloading tabs on soft delete", e);
+      }
+    }
+
+    // Mark the workspace as soft-deleted and persist.
+    workspace.deletedAt = Date.now();
+    workspace.deletedReason = "user";
+    this.saveWorkspace(workspace);
+
+    // Enforce retention caps now that a new entry has landed in trash.
+    this.sweepExpiredTrash();
+  }
+
+  /**
+   * Restore a soft-deleted workspace. Clears deletedAt/deletedReason,
+   * re-propagates so the strip reappears. Tabs lazy-load when the user
+   * switches to the workspace (they're still in pending state).
+   */
+  async restoreWorkspace(windowID) {
+    const workspace = this.getWorkspaceFromIdIncludingDeleted(windowID);
+    if (!workspace || !workspace.deletedAt) {
+      return;
+    }
+    delete workspace.deletedAt;
+    delete workspace.deletedReason;
+    this.saveWorkspace(workspace);
+  }
+
+  /**
+   * Purge every soft-deleted workspace (used by the "Clear Recently
+   * Deleted Workspaces" menu item).
+   */
+  async clearAllDeletedWorkspaces() {
+    const deleted = this.getDeletedWorkspaces();
+    for (const ws of deleted) {
+      await this.hardDeleteWorkspace(ws.uuid);
+    }
+  }
+
+  /**
+   * Enforce retention policy on the soft-delete trash:
+   *   - `zen.workspaces.trash.retention-days` (default 30): drop
+   *     entries older than this many days since `deletedAt`.
+   *   - `zen.workspaces.trash.max-entries` (default 10): after the
+   *     age cap, drop oldest entries so at most this many remain.
+   * Dropped entries are hard-deleted (tabs closed + record removed).
+   */
+  sweepExpiredTrash() {
+    if (this.privateWindowOrDisabled) {
+      return;
+    }
+    const retentionDays = Services.prefs.getIntPref(
+      "zen.workspaces.trash.retention-days",
+      30
+    );
+    const maxEntries = Services.prefs.getIntPref(
+      "zen.workspaces.trash.max-entries",
+      10
+    );
+
+    const now = Date.now();
+    const ageCutoff =
+      retentionDays > 0 ? now - retentionDays * 24 * 60 * 60 * 1000 : null;
+
+    // Snapshot the list; hardDeleteWorkspace mutates the cache.
+    const deleted = this.getDeletedWorkspaces();
+
+    const expired = [];
+    const survivors = [];
+    for (const ws of deleted) {
+      if (ageCutoff !== null && ws.deletedAt < ageCutoff) {
+        expired.push(ws);
+      } else {
+        survivors.push(ws);
+      }
+    }
+
+    // Trim to maxEntries (oldest first). survivors is newest-first
+    // because getDeletedWorkspaces sorts by deletedAt desc.
+    if (maxEntries >= 0 && survivors.length > maxEntries) {
+      const overflow = survivors.slice(maxEntries);
+      expired.push(...overflow);
+    }
+
+    for (const ws of expired) {
+      this.hardDeleteWorkspace(ws.uuid);
+    }
   }
 
   isWorkspaceActive(workspace) {
@@ -1345,19 +1498,26 @@ class nsZenWorkspaces {
 
   propagateWorkspaces(aWorkspaces) {
     const previousWorkspaces = this._workspaceCache || [];
+    // Full list (may include soft-deleted) is what we persist in the
+    // cache. For DOM rendering and active-workspace reconciliation we
+    // operate on liveWorkspaces so that soft-deleted workspaces are
+    // treated as "not present" in the strip even though the cache
+    // retains them for restore.
+    const liveWorkspaces = aWorkspaces.filter(ws => !ws.deletedAt);
     let promises = [];
     let hasChanged = false;
-    // Remove any workspace elements here that no longer exist
+    // Remove any workspace elements here that no longer exist (either
+    // hard-deleted, or soft-deleted: both should disappear from the strip).
     for (const previousWorkspace of previousWorkspaces) {
       if (
         this.workspaceElement(previousWorkspace.uuid) &&
-        !aWorkspaces.find(w => w.uuid === previousWorkspace.uuid)
+        !liveWorkspaces.find(w => w.uuid === previousWorkspace.uuid)
       ) {
         let promise = Promise.resolve();
         if (this.isWorkspaceActive(previousWorkspace)) {
-          // If the removed workspace was active, switch to another one
+          // If the removed workspace was active, switch to another one.
           const newActiveWorkspace =
-            aWorkspaces.find(w => w.uuid !== previousWorkspace.uuid) || null;
+            liveWorkspaces.find(w => w.uuid !== previousWorkspace.uuid) || null;
           promise = this.changeWorkspace(newActiveWorkspace);
         }
         promise = promise.then(() => {
@@ -1369,7 +1529,7 @@ class nsZenWorkspaces {
       }
     }
     // Add any new workspace elements here
-    for (const workspace of aWorkspaces) {
+    for (const workspace of liveWorkspaces) {
       if (!this.workspaceElement(workspace.uuid)) {
         this.#createWorkspaceTabsSection(workspace);
         hasChanged = true;
@@ -1378,7 +1538,7 @@ class nsZenWorkspaces {
     // Order the workspace elements correctly
     let previousElement = null;
     const arrowScrollbox = document.getElementById("tabbrowser-arrowscrollbox");
-    for (const workspace of aWorkspaces) {
+    for (const workspace of liveWorkspaces) {
       const workspaceElement = this.workspaceElement(workspace.uuid);
       if (workspaceElement) {
         if (previousElement === null) {
@@ -1398,6 +1558,8 @@ class nsZenWorkspaces {
       }
     }
     return Promise.all(promises).then(() => {
+      // Persist the FULL list (including soft-deleted) so restore can
+      // recover the workspace data.
       this._workspaceCache = aWorkspaces;
       if (hasChanged) {
         this.#fireSpaceUIUpdate();
@@ -2924,15 +3086,32 @@ class nsZenWorkspaces {
   async contextDeleteWorkspace() {
     const workspaceId =
       this.#contextMenuData?.workspaceId || this.activeWorkspace;
+    const workspace = this.getWorkspaceFromId(workspaceId);
+    if (!workspace) {
+      return;
+    }
     const [title, body] = await document.l10n.formatValues([
       { id: "zen-workspaces-delete-workspace-title" },
       {
         id: "zen-workspaces-delete-workspace-body",
-        args: { name: this.getWorkspaceFromId(workspaceId).name },
+        args: { name: workspace.name },
       },
     ]);
     if (Services.prompt.confirm(null, title, body)) {
-      this.removeWorkspace(workspaceId);
+      const name = workspace.name;
+      await this.softDeleteWorkspace(workspaceId);
+      // Undo toast -- 8s, primary button restores the workspace.
+      gZenUIManager.showToast("zen-workspaces-workspace-deleted-toast", {
+        l10nArgs: { name },
+        timeout: 8000,
+        button: {
+          id: "zen-workspaces-workspace-deleted-toast-undo-button",
+          labelId: "zen-workspaces-workspace-deleted-toast-undo",
+          command: () => {
+            this.restoreWorkspace(workspaceId);
+          },
+        },
+      });
     }
   }
 

@@ -186,6 +186,39 @@ git push -u origin gh-123-feature
 # Open the PR against upstream/dev.
 ```
 
+## Write back improvements to `zotavka/dev`
+
+Fixes to `flake.nix`, `flake.lock`, or `CLAUDE.md` itself belong on
+`zotavka/dev`, **not** on a feature branch. If you're working in a
+`zotavka/dev-gh-X-*` worktree and you find:
+
+- a flake bug (missing dep, wrong Rust/Python pin, broken shell hook),
+- a stale or wrong instruction in this `CLAUDE.md`,
+- a new workflow quirk that future-you or future-agent would trip on,
+
+don't commit the fix to the feature branch — it would just get dropped
+during cherry-pick. Instead:
+
+```bash
+# From the feature worktree, edit in the main checkout (always on zotavka/dev).
+MAIN=/Users/zotavka/Developer/zen-browser-desktop
+$EDITOR "$MAIN/flake.nix"     # or "$MAIN/CLAUDE.md"
+
+git -C "$MAIN" add flake.nix
+git -C "$MAIN" commit -m "no-bug: <what you fixed>"
+git -C "$MAIN" push origin zotavka/dev
+
+# Pull the fix into the feature worktree so it also benefits here.
+git fetch origin
+git rebase origin/zotavka/dev
+```
+
+Exception: if the fix is *specifically* needed for the feature under test
+(e.g. a new native dep the PR introduces), it belongs in the clean PR
+branch's code changes, not on `zotavka/dev`. When in doubt, ask whether
+the fix would still apply with this feature branch deleted — if yes,
+write back to `zotavka/dev`.
+
 ## Invariants worth preserving
 
 1. **Never include `flake.nix`, `flake.lock`, or this `CLAUDE.md` in a PR

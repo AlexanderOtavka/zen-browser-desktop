@@ -98,3 +98,37 @@ zen-panel-ui-workspaces-change-forward =
 
 zen-panel-ui-workspaces-change-back =
     .label = Previous Space
+
+# Soft-delete / Recently Deleted Workspaces
+# Shown as a submenu in the Space actions context menu. Expanding it
+# lists recently soft-deleted spaces that can be restored.
+zen-workspaces-restore-workspace-label =
+    .label = Restore Deleted Space
+
+# Label for a single entry in the Restore submenu. $name is the space's
+# user-visible name; $tabCount is the number of non-essential tabs that
+# will come back when the space is restored.
+zen-workspaces-restore-workspace-item =
+    .label = { $name } — { $tabCount ->
+        [one] { $tabCount } tab
+       *[other] { $tabCount } tabs
+    }
+
+# Shown when the Restore submenu is hidden because the trash is empty
+# (kept around for any future surface that might need to render an
+# empty state -- current UI just hides the submenu entirely).
+zen-workspaces-restore-workspace-empty =
+    .label = (nothing to restore)
+
+zen-workspaces-clear-deleted-menuitem =
+    .label = Clear Recently Deleted Spaces
+
+zen-workspaces-clear-deleted-title = Clear Recently Deleted Spaces?
+zen-workspaces-clear-deleted-body = This will permanently delete { $count } space(s) and close their tabs. This action cannot be undone.
+
+# Toast shown after soft-deleting a workspace. $name is the space's
+# user-visible name.
+zen-workspaces-workspace-deleted-toast = Space "{ $name }" moved to Recently Deleted.
+
+zen-workspaces-workspace-deleted-toast-undo =
+    .label = Undo

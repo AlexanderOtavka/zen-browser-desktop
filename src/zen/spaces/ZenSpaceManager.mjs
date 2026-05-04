@@ -1200,6 +1200,90 @@ class nsZenWorkspaces {
     return item;
   }
 
+  /**
+   * Repopulate the "Restore Deleted Workspace" submenu + "Clear
+   * Recently Deleted Workspaces" menuitem inside zenWorkspaceMoreActions.
+   * Hidden entirely when the trash is empty.
+   */
+  #updateRecentlyDeletedMenu() {
+    const separator = document.getElementById(
+      "context_zenRecentlyDeletedSeparator"
+    );
+    const restoreMenu = document.getElementById("context_zenRestoreWorkspace");
+    const restorePopup = document.getElementById("zenRestoreWorkspacePopup");
+    const clearItem = document.getElementById(
+      "context_zenClearRecentlyDeletedWorkspaces"
+    );
+    if (!separator || !restoreMenu || !restorePopup || !clearItem) {
+      return;
+    }
+
+    // Always clear prior dynamic children first.
+    while (restorePopup.firstChild) {
+      restorePopup.firstChild.remove();
+    }
+
+    const deleted = this.getDeletedWorkspaces();
+    if (!deleted.length) {
+      separator.hidden = true;
+      restoreMenu.hidden = true;
+      clearItem.hidden = true;
+      return;
+    }
+
+    separator.hidden = false;
+    restoreMenu.hidden = false;
+    clearItem.hidden = false;
+
+    for (const workspace of deleted) {
+      const item = document.createXULElement("menuitem");
+      item.className = "zen-workspace-restore-menu-item";
+      item.setAttribute("zen-workspace-id", workspace.uuid);
+      // Count tabs associated with the workspace for the display label.
+      const tabCount = this.allStoredTabs.filter(
+        tab =>
+          tab.getAttribute("zen-workspace-id") === workspace.uuid &&
+          !tab.hasAttribute("zen-empty-tab") &&
+          !tab.hasAttribute("zen-essential")
+      ).length;
+      document.l10n.setAttributes(
+        item,
+        "zen-workspaces-restore-workspace-item",
+        { name: workspace.name || "", tabCount }
+      );
+      const iconIsSvg = workspace.icon && workspace.icon.endsWith(".svg");
+      if (iconIsSvg) {
+        item.setAttribute("image", workspace.icon);
+        item.classList.add("zen-workspace-context-icon");
+      }
+      item.addEventListener("command", () => {
+        this.restoreWorkspace(workspace.uuid);
+      });
+      restorePopup.appendChild(item);
+    }
+  }
+
+  /**
+   * Command handler for "Clear Recently Deleted Workspaces". Confirms
+   * before hard-deleting every soft-deleted workspace.
+   */
+  async contextClearRecentlyDeletedWorkspaces() {
+    const deleted = this.getDeletedWorkspaces();
+    if (!deleted.length) {
+      return;
+    }
+    const [title, body] = await document.l10n.formatValues([
+      { id: "zen-workspaces-clear-deleted-title" },
+      {
+        id: "zen-workspaces-clear-deleted-body",
+        args: { count: deleted.length },
+      },
+    ]);
+    if (Services.prompt.confirm(null, title, body)) {
+      await this.clearAllDeletedWorkspaces();
+    }
+  }
+
   #contextMenuData = null;
   updateWorkspaceActionsMenu(event) {
     if (event.target.id !== "zenWorkspaceMoreActions") {
@@ -1260,6 +1344,7 @@ class nsZenWorkspaces {
     } else {
       separator.hidden = true;
     }
+    this.#updateRecentlyDeletedMenu();
     event.target.addEventListener(
       "popuphidden",
       () => {

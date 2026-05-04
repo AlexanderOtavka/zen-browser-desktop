@@ -1389,24 +1389,22 @@ class nsZenWorkspaces {
   }
 
   /**
-   * Back-compat entry point. External callers (and tests) expect
-   * `removeWorkspace` to "make the workspace go away" -- since Option B
-   * introduces the soft-delete layer, we route through it by default so
-   * the workspace disappears from UI but can still be restored.
-   *
-   * Code paths that really do want to drop the record and close its
-   * tabs (the retention sweeper, "Clear Recently Deleted") should call
-   * `hardDeleteWorkspace` directly.
+   * Back-compat entry point. Existing internal callers (creation-form
+   * cancel, test harness) expect `removeWorkspace` to permanently drop
+   * the workspace and close its tabs -- those callers keep that
+   * behavior by aliasing to hardDeleteWorkspace. The user-facing delete
+   * surface (contextDeleteWorkspace) invokes softDeleteWorkspace
+   * directly so the UX goes through the Recently Deleted trash.
    */
   removeWorkspace(windowID) {
-    return this.softDeleteWorkspace(windowID);
+    return this.hardDeleteWorkspace(windowID);
   }
 
   /**
    * Permanently delete a workspace: close its owned tabs and drop the
-   * record from the cache. Used by the retention sweeper and by the
-   * "Clear Recently Deleted Workspaces" UI. Not exposed to normal user
-   * delete flows -- those go through softDeleteWorkspace.
+   * record from the cache. Used by the retention sweeper, by the
+   * "Clear Recently Deleted Workspaces" UI, and by any internal call
+   * site that wants the pre-soft-delete semantics.
    */
   hardDeleteWorkspace(windowID) {
     let { promise, resolve } = Promise.withResolvers();

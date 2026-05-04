@@ -300,11 +300,7 @@ class nsZenWorkspaceCreation extends MozXULElement {
   }
 
   async handleZenWorkspacesChange() {
-    // When the creation form is aborted we want to drop the placeholder
-    // workspace entirely rather than parking it in the Recently Deleted
-    // trash -- from the user's point of view this workspace never
-    // existed.
-    await gZenWorkspaces.hardDeleteWorkspace(this.workspaceId);
+    await gZenWorkspaces.removeWorkspace(this.workspaceId);
     await this.#cleanup();
   }
 

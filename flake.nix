@@ -43,6 +43,9 @@
           platformdirs
           pycodestyle
           requests
+          # marionette_driver.processhandler imports psutil at module load;
+          # without it `./mach test` crashes before launching any test.
+          psutil
           # mach bootstraps its own virtualenvs; don't add pip/setuptools here
           # (on recent nixpkgs py311 pip drags in sphinx 9.1.0 which requires
           # python ≥ 3.12 and breaks evaluation).
@@ -264,17 +267,8 @@
             echo "  npm test -- tabs          # one suite (dir name under src/zen/tests)"
             echo "  npm test -- --jsdebugger  # extra args forward to ./mach test"
             echo "  npm run test:dbg          # opens jsdebugger, breaks on failure"
-            echo "  (cd engine && ./mach test src/zen/tests/tabs)   # direct mach invocation"
+            echo "  (cd engine && ./mach test zen/tests/tabs)       # direct mach invocation"
             echo "  (cd engine && ./mach mochitest --help)          # per-harness flags"
-            echo ""
-            echo "  NOTE: the checked-in mozconfig sets --disable-tests (works around a"
-            echo "  third_party/zucchini + libc++19 breakage). To actually run tests you"
-            echo "  must comment out that line in ./mozconfig and rebuild:"
-            echo "      sed -i.bak '/--disable-tests/s/^/# /' mozconfig"
-            echo "      npm run build   # relinks with tests enabled"
-            echo "  If the zucchini tests fail to compile, also add to mozconfig:"
-            echo "      ac_add_options --disable-updater"
-            echo "  or patch third_party/zucchini for char_traits<unsigned char>."
           '';
         } // surferEnv);
 

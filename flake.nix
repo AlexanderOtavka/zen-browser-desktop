@@ -161,6 +161,20 @@
             # Node-gyp etc. want this.
             export npm_config_python="${pythonEnv}/bin/python3"
 
+            # Node ignores SSL_CERT_FILE and uses its own bundled Mozilla
+            # CA store, which doesn't include corporate MITM roots like
+            # Zscaler. Point NODE_EXTRA_CA_CERTS at the shell's SSL_CERT_FILE
+            # if set (respects whatever extra roots the user has trusted —
+            # e.g. homebrew's /opt/homebrew/etc/openssl@3/cert.pem with the
+            # Zscaler root merged in), otherwise fall back to nix cacert.
+            # Without this, `surfer download` fails with
+            # "unable to get local issuer certificate" behind Zscaler.
+            if [ -r "$SSL_CERT_FILE" ]; then
+              export NODE_EXTRA_CA_CERTS="$SSL_CERT_FILE"
+            else
+              export NODE_EXTRA_CA_CERTS="${pkgs.cacert}/etc/ssl/certs/ca-bundle.crt"
+            fi
+
             # Once `mach bootstrap` has fetched Firefox's clang toolchain,
             # prefer it over nix's clang-wrapper. The wrapper mangles a few
             # flags (notably preprocessing of `.S` files — `__APPLE__` stops
@@ -170,6 +184,16 @@
             if [ -x "$HOME/.mozbuild/clang/bin/clang" ]; then
               export CC="$HOME/.mozbuild/clang/bin/clang"
               export CXX="$HOME/.mozbuild/clang/bin/clang++"
+              # mach's configure snapshots $AS and inherits nix's `as`
+              # (clang-wrapper'd) by default. That `as` assembles .S files
+              # without running cpp, leaving `#if defined(__APPLE__)` blocks
+              # unexpanded and tripping the icu_data.S errors. Setting AS to
+              # mach's clang alone doesn't work either: it preprocesses but
+              # has no -isysroot, so `#include <mach/machine/vm_param.h>` in
+              # libffi's sysv.S can't find the macOS SDK. Unset AS entirely
+              # so mach falls back to using CC (which has -isysroot baked in)
+              # for .S assembly.
+              unset AS
             fi
 
             ${pkgs.lib.optionalString isDarwin ''

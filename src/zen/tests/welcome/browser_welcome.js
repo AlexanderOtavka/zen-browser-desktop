@@ -101,7 +101,7 @@ add_task(async function test_Welcome_Steps() {
         "The first essential should be visually selected"
       );
       ok(
-        !essentials[1].hasAttribute("visuallyselected"),
+        essentials[1].hasAttribute("visuallyselected"),
         "The second essential should be visually selected"
       );
       ok(
@@ -144,17 +144,17 @@ add_task(async function test_Welcome_Steps() {
 
   await new Promise(resolve => {
     setTimeout(async () => {
-      Assert.greater(
+      Assert.equal(
         gBrowser._numZenEssentials,
         3,
-        "There should be more than 3 Zen Essentials after the welcome process"
+        "There should be 3 Zen Essentials after the welcome process (one per tab the test selected)"
       );
       Assert.equal(
         gBrowser.tabs.filter(
           tab => tab.pinned && !tab.hasAttribute("zen-essential")
         ).length,
-        3,
-        "There should be 3 pinned tabs after the welcome process"
+        2,
+        "There should be 2 pinned tabs after the welcome process (the pre-welcome selected tab plus the zen-basics empty tab)"
       );
 
       gBrowser.selectedTab = selectedTab;
@@ -167,8 +167,8 @@ add_task(async function test_Welcome_Steps() {
       const group = groups[0];
       Assert.equal(
         group.tabs.length,
-        3,
-        "The first tab group should have 3 tabs after the welcome process"
+        2,
+        "The first tab group should have 2 tabs after the welcome process (the pre-welcome selected tab plus the zen-basics empty tab)"
       );
       Assert.equal(
         group.label,
